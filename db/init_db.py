@@ -1,31 +1,38 @@
-
 import psycopg2
+import os
 
-conn = psycopg2.connect(
-    dbname="finance",
-    user="admin",
-    password="admin",
-    host="localhost",
-    port="5432"
-)
 
-cursor = conn.cursor()
+def create_price_table():
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS stock_prices (
-    id SERIAL PRIMARY KEY,
-    symbol TEXT NOT NULL,
-    timestamp TIMESTAMP NOT NULL,
-    open FLOAT,
-    high FLOAT,
-    low FLOAT,
-    close FLOAT,
-    volume FLOAT,
-    UNIQUE(symbol, timestamp)
-);
-""")
+    conn = psycopg2.connect(
+        dbname=os.getenv("DB_NAME"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT")
+    )
 
-conn.commit()
-conn.close()
+    cursor = conn.cursor()
 
-print("Table created!")
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS stock_prices (
+        id SERIAL PRIMARY KEY,
+        symbol TEXT NOT NULL,
+        timestamp TIMESTAMP NOT NULL,
+        open FLOAT,
+        high FLOAT,
+        low FLOAT,
+        close FLOAT,
+        volume FLOAT,
+        UNIQUE(symbol, timestamp)
+    );
+    """)
+
+    conn.commit()
+    conn.close()
+
+    print("stock_prices table created")
+
+
+if __name__ == "__main__":
+    create_price_table()
