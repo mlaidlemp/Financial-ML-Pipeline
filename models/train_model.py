@@ -1,46 +1,81 @@
-import logging
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
 import joblib
+import pandas as pd
 
-from models.dataset import prepare_dataset
+from datetime import datetime, UTC
 
-logging.basicConfig(
-    filename="logs/model.log",
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_absolute_error
+
+from db.connection import engine
+from core.logging import get_logger
 
 
-def train():
-    symbol = "AAPL"
+logger = get_logger(__name__)
 
-    logging.info("Loading dataset")
 
-    X, y, df = prepare_dataset(symbol)
+FEATURES = [
+    "return_1d",
+    "return_5d",
+    "ma_10",
+    "ma_20",
+    "volatility_10"
+]
 
-    split_index = int(len(X) * 0.8)
 
-    X_train, X_test = X.iloc[:split_index], X.iloc[split_index:]
-    y_train, y_test = y.iloc[:split_index], y.iloc[split_index:]
+QUERY = "SELECT * FROM stock_features"
 
-    model = RandomForestClassifier(
-        n_estimators=100,
-        max_depth=5,
-        random_state=42
-    )
 
-    logging.info("Training model")
+
+def train_model():
+    df = pd.read_sql(QUERY, engine)
+
+    X = df[FEATURES]
+    y = df["target"]
+
+    split_idx = int(len(df) * 0.8)
+
+    X_train = X.iloc[:split_idx]
+    X_test = X.iloc[split_idx:]
+
+    y_train = y.iloc[:split_idx]
+    y_test = y.iloc[split_idx:]
+
+    model = Pipeline([
+        ("scaler", StandardScaler()),
+        (
+            "model",
+            RandomForestRegressor(
+                n_estimators=200,
+                max_depth=10,
+                random_state=42,
+                n_jobs=-1
+            )
+        )
+    ])
 
     model.fit(X_train, y_train)
 
-    joblib.dump(model, "models/model.pkl")
-    
+    predictions = model.predict(X_test)
 
-    logging.info("Model saved")
+    mae = mean_absolute_error(y_test, predictions)
 
-    return model, X_test, y_test
+    logger.info(f"Model MAE: {mae}")
+
+    artifact = {
+        "model": model,
+        "features": FEATURES,
+        "trained_at": datetime.now(UTC).isoformat(),
+        "metrics": {
+            "mae": mae
+        }
+    }
+
+    joblib.dump(artifact, "artifacts/model.pkl")
+
+    logger.info("Model saved")
 
 
 if __name__ == "__main__":
-    train()
+    train_model()

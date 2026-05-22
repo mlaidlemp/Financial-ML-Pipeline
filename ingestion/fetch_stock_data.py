@@ -1,72 +1,81 @@
-import yfinance as yf
 import pandas as pd
-import logging
+import yfinance as yf
+from sqlalchemy import text
 
-from db.insert_data import insert_stock_data
+from db.connection import engine
+from core.logging import get_logger
 
-logging.basicConfig(
-    filename="logs/ingestion.log",
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+
+logger = get_logger(__name__)
+
+
+SYMBOLS = [
+    "AAPL",
+    "MSFT",
+    "GOOGL",
+    "AMZN",
+    "META"
+]
+
+
+CREATE_TABLE_QUERY = """
+CREATE TABLE IF NOT EXISTS stock_prices (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(20),
+    timestamp TIMESTAMP,
+    open FLOAT,
+    high FLOAT,
+    low FLOAT,
+    close FLOAT,
+    volume BIGINT
 )
-
-STOCK_SYMBOL = "AAPL"
-
-
-def fetch_stock_data(symbol: str):
-    try:
-        ticker = yf.Ticker(symbol)
-        df = ticker.history(period="5d", interval="1h")
-
-        if df.empty:
-            raise ValueError("No data received")
-
-        return df
-
-    except Exception as e:
-        logging.error(f"Error fetching data: {e}")
-        return None
+"""
 
 
-def process_and_store_data(df: pd.DataFrame, symbol: str):
-    try:
-        df = df.reset_index()
+with engine.begin() as conn:
+    conn.execute(text(CREATE_TABLE_QUERY))
 
-        print("Columns from yfinance:", df.columns)
 
-        if "Datetime" in df.columns:
-            time_col = "Datetime"
-        elif "Date" in df.columns:
-            time_col = "Date"
-        else:
-            raise ValueError(f"No valid time column found: {df.columns}")
 
-        df = df[[time_col, "Close"]]
+def fetch_symbol(symbol: str):
+    logger.info(f"Fetching data for {symbol}")
 
-        df.columns = ["timestamp", "close"]
+    df = yf.download(
+        symbol,
+        period="2y",
+        interval="1d",
+        auto_adjust=True,
+        progress=False
+    )
 
-        data = df.to_dict(orient="records")
+    if df.empty:
+        logger.warning(f"No data found for {symbol}")
+        return
 
-        insert_stock_data(data, symbol)
+    df.reset_index(inplace=True)
 
-        logging.info(f"Inserted {len(data)} rows into database for {symbol}")
+    df.columns = [
+        c[0].lower() if isinstance(c, tuple) else c.lower()
+        for c in df.columns
+    ]
 
-    except Exception as e:
-        logging.error(f"Error processing/storing data: {e}")
-        print("Insert error:", e)
+    df["symbol"] = symbol
 
-def main():
-    logging.info("Starting data ingestion")
+    df["date"] = pd.to_datetime(df["date"], utc=True)
 
-    df = fetch_stock_data(STOCK_SYMBOL)
+    df.rename(columns={"date": "timestamp"}, inplace=True)
 
-    if df is not None:
-        process_and_store_data(df, STOCK_SYMBOL)
-    else:
-        logging.warning("No data fetched, skipping insert")
+    df.to_sql(
+        "stock_prices",
+        engine,
+        if_exists="append",
+        index=False,
+        method="multi"
+    )
 
-    logging.info("Finished ingestion")
+    logger.info(f"Inserted {len(df)} rows for {symbol}")
 
 
 if __name__ == "__main__":
-    main()
+    for symbol in SYMBOLS:
+        fetch_symbol(symbol)

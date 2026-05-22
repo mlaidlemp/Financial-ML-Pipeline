@@ -1,60 +1,44 @@
 import joblib
 import pandas as pd
 
+from sqlalchemy import text
+
 from db.connection import engine
 
 
-FEATURE_COLUMNS = [
-    "return_1",
-    "ma_5",
-    "ma_10",
-    "volatility_10"
-]
+artifact = joblib.load("artifacts/model.pkl")
+
+model = artifact["model"]
+FEATURES = artifact["features"]
+MODEL_VERSION = artifact["trained_at"]
 
 
-class ModelService:
+QUERY = text("""
+SELECT *
+FROM stock_features
+WHERE symbol = :symbol
+ORDER BY timestamp DESC
+LIMIT 1
+""")
 
-    def __init__(self, model_path="models/model.pkl"):
-        self.model = joblib.load(model_path)
 
-    def load_latest_features(self, symbol: str):
 
-        query = """
-            SELECT *
-            FROM stock_features
-            WHERE symbol = %s
-            ORDER BY timestamp DESC
-            LIMIT 1;
-        """
+def predict(symbol: str):
+    df = pd.read_sql(
+        QUERY,
+        engine,
+        params={"symbol": symbol}
+    )
 
-        df = pd.read_sql(
-            query,
-            engine,
-            params=(symbol,)
-        )
+    if df.empty:
+        raise ValueError("No data available")
 
-        if df.empty:
-            raise ValueError(
-                f"No feature data found for symbol: {symbol}"
-            )
+    X = df[FEATURES]
 
-        return df
+    prediction = model.predict(X)[0]
 
-    def predict(self, symbol: str):
-
-        df = self.load_latest_features(symbol)
-
-        X = df[FEATURE_COLUMNS]
-
-        probability = self.model.predict_proba(X)[0][1]
-
-        prediction = int(probability > 0.5)
-
-        timestamp = str(df["timestamp"].iloc[0])
-
-        return {
-            "symbol": symbol,
-            "prediction": prediction,
-            "probability": round(float(probability), 4),
-            "timestamp": timestamp
-        }
+    return {
+        "symbol": symbol,
+        "prediction": float(prediction),
+        "model_version": MODEL_VERSION
+    }

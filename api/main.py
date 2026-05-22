@@ -1,38 +1,36 @@
-
-
 from fastapi import FastAPI, HTTPException
 
-from api.schemas import PredictionRequest
-from api.service import ModelService
+from api.schemas import (
+    PredictionRequest,
+    PredictionResponse
+)
 
-from db.init_db import create_price_table
-from db.create_feature_table import create_feature_table
-
-
-print("Initializing database tables...")
-
-create_price_table()
-create_feature_table()
-
-print("Database initialization complete")
-
-app = FastAPI(title="Financial ML API")
-
-model_service = ModelService()
-
-@app.get("/")
-def root():
-    return {"message": "API is running"}
+from api.service import predict
 
 
-@app.post("/predict", response_model=PredictionResponse)
-def predict(request: PredictionRequest):
+app = FastAPI(
+    title="Financial ML API",
+    version="2.0.0"
+)
 
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.post(
+    "/predict",
+    response_model=PredictionResponse
+)
+def predict_route(request: PredictionRequest):
     try:
-        result = model_service.predict(request.symbol)
-        
+        result = predict(request.symbol)
+
         return result
+
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )

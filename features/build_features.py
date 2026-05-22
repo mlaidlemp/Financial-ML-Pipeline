@@ -1,112 +1,91 @@
-
 import pandas as pd
-import logging
-import psycopg2
+from sqlalchemy import text
 
 from db.connection import engine
-from features.feature_store import get_latest_feature_timestamp
+from core.logging import get_logger
 
-# Logging setup
-logging.basicConfig(
-    filename="logs/features.log",
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+
+logger = get_logger(__name__)
+
+
+FEATURE_QUERY = """
+SELECT *
+FROM stock_prices
+ORDER BY timestamp ASC
+"""
+
+
+CREATE_FEATURE_TABLE = """
+CREATE TABLE IF NOT EXISTS stock_features (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(20),
+    timestamp TIMESTAMP,
+    return_1d FLOAT,
+    return_5d FLOAT,
+    ma_10 FLOAT,
+    ma_20 FLOAT,
+    volatility_10 FLOAT,
+    target FLOAT
 )
+"""
 
 
-def load_new_data(symbol):
-    last_ts = get_latest_feature_timestamp(symbol)
-
-    if last_ts is None:
-        query = """
-            SELECT timestamp, close
-            FROM stock_prices
-            WHERE symbol = %s
-            ORDER BY timestamp ASC;
-        """
-        params = (symbol,)
-    else:
-        query = """
-            SELECT timestamp, close
-            FROM stock_prices
-            WHERE symbol = %s AND timestamp > %s
-            ORDER BY timestamp ASC;
-        """
-        params = (symbol, last_ts)
-    df = pd.read_sql(query, engine, params=params)
-    return df
+with engine.begin() as conn:
+    conn.execute(text(CREATE_FEATURE_TABLE))
 
 
-def build_features(df):
-    df = df.sort_values("timestamp")
-    
-    df["return_1"] = df["close"].pct_change()
-    df["ma_5"] = df["close"].rolling(5).mean()
-    df["ma_10"] = df["close"].rolling(10).mean()
-    df["volatility_10"] = df["return_1"].rolling(10).std()
 
-    df = df.dropna()
+def build_features():
+    df = pd.read_sql(FEATURE_QUERY, engine)
 
-    return df
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
 
-def save_features(df, symbol):
-    conn = psycopg2.connect(
-        dbname="finance",
-        user="admin",
-        password="admin",
-        host="localhost",
-        port="5432"
-    )
+    frames = []
 
-    cursor = conn.cursor()
+    for symbol in df["symbol"].unique():
+        sdf = df[df["symbol"] == symbol].copy()
 
-    data = [
-        (
-            symbol,
-            row.timestamp,
-            row.close,
-            row.return_1,
-            row.ma_5,
-            row.ma_10,
-            row.volatility_10
+        sdf["return_1d"] = sdf["close"].pct_change(1)
+        sdf["return_5d"] = sdf["close"].pct_change(5)
+
+        sdf["ma_10"] = sdf["close"].rolling(10).mean()
+        sdf["ma_20"] = sdf["close"].rolling(20).mean()
+
+        sdf["volatility_10"] = (
+            sdf["return_1d"]
+            .rolling(10)
+            .std()
         )
-        for row in df.itertuples()
+
+        sdf["target"] = sdf["close"].shift(-1)
+
+        sdf.dropna(inplace=True)
+
+        frames.append(sdf)
+
+    final_df = pd.concat(frames)
+
+    feature_cols = [
+        "symbol",
+        "timestamp",
+        "return_1d",
+        "return_5d",
+        "ma_10",
+        "ma_20",
+        "volatility_10",
+        "target"
     ]
 
-    cursor.executemany("""
-        INSERT INTO stock_features
-        (symbol, timestamp, close, return_1, ma_5, ma_10, volatility_10)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (symbol, timestamp) DO NOTHING;
-    """, data)
+    final_df[feature_cols].to_sql(
+        "stock_features",
+        engine,
+        if_exists="replace",
+        index=False,
+        method="multi"
+    )
 
-    conn.commit()
-    conn.close()
-
-    logging.info(f"Inserted {len(data)} rows")
-
-
-def main():
-    symbol = "AAPL"
-
-    logging.info("Starting feature pipeline")
-
-    df = load_new_data(symbol)
-
-    if df.empty:
-        logging.info("No new data")
-        return
-
-    df = build_features(df)
-
-    if df.empty:
-        logging.warning("Not enough data after feature generation")
-        return
-
-    save_features(df, symbol)
-
-    logging.info("Feature pipeline completed")
+    logger.info("Feature engineering complete")
 
 
 if __name__ == "__main__":
-    main()
+    build_features()
